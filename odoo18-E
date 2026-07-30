@@ -1,0 +1,424 @@
+#!/bin/bash
+
+# Interrompe lo script in caso di errori critici
+set -e
+
+# Configurazione directory e parametri
+OCA_DIR="/opt/oca"
+ODOO_HOME="/opt/odoo18"
+CUSTOM_ADDONS_DIR="$ODOO_HOME/odoo18-custom-addons"
+ODOO_CORE_DIR="$ODOO_HOME/odoo18"
+LOG_DIR="/var/log/odoo18"
+CONFIG_FILE="/etc/odoo18.conf"
+SERVICE_FILE="/etc/systemd/system/odoo18.service"
+ORG_NAME="OCA"
+BRANCH="18.0"
+ODOO_USER="odoo18"
+
+# Funzione di aiuto (Help)
+show_help() {
+    echo "=================================================================="
+    echo " Gestore Completo Installazione, OCA, Traccar & Tuning per Odoo 18"
+    echo "=================================================================="
+    echo "Uso: sudo ./setup_odoo18.sh [COMANDO]"
+    echo ""
+    echo "Comandi disponibili:"
+    echo "  full-install    Esegue l'installazione pulita da zero: pacchetti di sistema,"
+    echo "                  utente, Python venv, PostgreSQL, auto-tuning hardware"
+    echo "                  e clonazione iniziale di tutti i repository OCA."
+    echo "  traccar-install Installa Traccar localmente con PostgreSQL, opzioni di"
+    echo "                  Reverse Geocoding (Nominatim) e Forwarding dati."
+    echo "  install         Clona/aggiorna i repository OCA da GitHub."
+    echo "  select          Mostra l'elenco interattivo con ID numerici per attivare"
+    echo "                  i moduli e installare i relativi requirements Python."
+    echo "  update          Esegue il git pull su tutti i repository in $OCA_DIR."
+    echo "  clean           Rimuove i link simbolici orfani o non validi."
+    echo "  status          Mostra lo stato Git di ogni repository OCA."
+    echo "  help            Mostra questo messaggio di guida."
+    echo "=================================================================="
+}
+
+# Controllo privilegi di root
+if [ "$EUID" -ne 0 ]; then
+    echo "[ERRORE] Questo script deve essere eseguito con i privilegi di root (sudo)."
+    exit 1
+fi
+
+# Funzione di Auto-Tuning basata su risorse hardware (CPU e RAM)
+calculate_tuning() {
+    echo "=== Analisi risorse hardware e Auto-Tuning PostgreSQL/Odoo ==="
+    TOTAL_RAM_MB=$(free -m | awk '/Mem:/ {print $2}')
+    TOTAL_CPUs=$(nproc)
+    
+    echo "[INFO] Risorse rilevate: CPU Cores = $TOTAL_CPUs, RAM Totale = ${TOTAL_RAM_MB}MB"
+    
+    PG_SHARED_BUFFERS=$((TOTAL_RAM_MB / 4))
+    if [ $PG_SHARED_BUFFERS -lt 128 ]; then PG_SHARED_BUFFERS=128; fi
+    
+    PG_EFFECTIVE_CACHE=$(( (TOTAL_RAM_MB * 3) / 4 ))
+    ODOO_WORKERS=$(( (TOTAL_CPUs * 2) ))
+    if [ $ODOO_WORKERS -lt 1 ]; then ODOO_WORKERS=1; fi
+    
+    LIMIT_MEMORY_SOFT=2147483648  # 2 GB
+    LIMIT_MEMORY_HARD=2684354560  # 2.5 GB
+
+    echo "[INFO] Parametri calcolati:"
+    echo "       - PostgreSQL shared_buffers = ${PG_SHARED_BUFFERS}MB"
+    echo "       - PostgreSQL effective_cache_size = ${PG_EFFECTIVE_CACHE}MB"
+    echo "       - Odoo Workers consigliati = $ODOO_WORKERS"
+}
+
+# Funzione per recuperare la lista dei repository OCA da GitHub
+get_repos() {
+    curl -s "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100&page=1" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if isinstance(data, list):
+        for repo in data:
+            print(repo['name'])
+    else:
+        print('')
+except Exception:
+    pass
+"
+}
+
+# Funzione interattiva con ID numerici per attivazione moduli e requisiti Python
+select_repos() {
+    echo "=== Elenco Repository OCA Disponibili ==="
+    
+    REPOS=("$OCA_DIR"/*/)
+    
+    if [ ${#REPOS[@]} -eq 0 ] || [ ! -d "${REPOS[0]}" ]; then
+        echo "[ERRORE] Nessun repository trovato in $OCA_DIR. Esegui prima 'full-install' o 'install'."
+        return 1
+    fi
+
+    i=1
+    for REPO_PATH in "${REPOS[@]}"; do
+        REPO_NAME=$(basename "$REPO_PATH")
+        HAS_REQ="[No Req]"
+        if [ -f "${REPO_PATH}requirements.txt" ]; then
+            HAS_REQ="[Ha Requirements]"
+        fi
+        printf "%3d) %-40s %s\n" "$i" "$REPO_NAME" "$HAS_REQ"
+        i=$((i+1))
+    done
+
+    echo ""
+    read -p "Inserisci i numeri dei repository da abilitare (es. 5 12 43 o 'all' per tutti): " SELECTION
+
+    if [ "$SELECTION" == "all" ]; then
+        SELECTED_PATHS=("${REPOS[@]}")
+    else
+        SELECTED_PATHS=()
+        for NUM in $SELECTION; do
+            idx=$((NUM-1))
+            if [ $idx -ge 0 ] && [ $idx -lt ${#REPOS[@]} ]; then
+                SELECTED_PATHS+=("${REPOS[$idx]}")
+            else
+                echo "[AVVISO] ID $NUM non valido, saltato."
+            fi
+        done
+    fi
+
+    echo "=== Elaborazione e attivazione repository selezionati ==="
+    if [ ! -d "$CUSTOM_ADDONS_DIR" ]; then
+        mkdir -p "$CUSTOM_ADDONS_DIR"
+    fi
+
+    for REPO_PATH in "${SELECTED_PATHS[@]}"; do
+        REPO_NAME=$(basename "$REPO_PATH")
+        echo "[ELABORAZIONE] $REPO_NAME..."
+
+        if [ -f "${REPO_PATH}requirements.txt" ]; then
+            echo "   -> Installazione dipendenze Python per $REPO_NAME..."
+            su - $ODOO_USER -c "$ODOO_HOME/venv/bin/pip install -r ${REPO_PATH}requirements.txt" || echo "   [AVVISO] Possibile conflitto nei requirements di $REPO_NAME, saltato."
+        fi
+
+        find "$REPO_PATH" -mindepth 1 -maxdepth 1 -type d | while read -r MODULE_PATH; do
+            DIR_NAME=$(basename "$MODULE_PATH")
+            if [ -f "$MODULE_PATH/__manifest__.py" ] || [ -f "$MODULE_PATH/__openerp__.py" ] || [ "$DIR_NAME" == "setup" ]; then
+                if [ "$DIR_NAME" == "setup" ]; then
+                    SYMLINK_NAME="${REPO_NAME}_setup"
+                else
+                    SYMLINK_NAME="$DIR_NAME"
+                fi
+                SYMLINK_PATH="$CUSTOM_ADDONS_DIR/$SYMLINK_NAME"
+                if [ ! -lexists "$SYMLINK_PATH" ] && [ ! -e "$SYMLINK_PATH" ]; then
+                    ln -s "$MODULE_PATH" "$SYMLINK_PATH"
+                    echo "   [LINK CREATO] $SYMLINK_NAME"
+                fi
+            fi
+        done
+    done
+    chown -R $ODOO_USER:$ODOO_USER "$CUSTOM_ADDONS_DIR"
+    echo "=== Configurazione selettiva completata con successo! ==="
+}
+
+# Gestione dei comandi passati da riga di comando
+COMMAND="${1:-help}"
+
+case "$COMMAND" in
+    full-install)
+        echo "=== AVVIO INSTALLAZIONE COMPLETA DI ODOO 18 & INFRASTRUTTURA ==="
+        
+        apt-get update && apt-get upgrade -y
+        apt-get install -y git python3-pip python3-dev python3-venv python3-wheel libxml2-dev \
+                           libxslt1-dev zlib1g-dev libsasl2-dev libldap2-dev build-essential libssl-dev \
+                           libffi-dev libjpeg-dev libpq-dev libreadline-dev libsqlite3-dev wget curl llvm \
+                           libncurses5-dev libncursesw5-dev xz-utils tk-dev libxmlsec1-dev liblcms2-dev fontconfig
+        
+        apt-get install -y postgresql postgresql-client
+        
+        calculate_tuning
+
+        PG_VERSION=$(pg_lsclusters -h | awk '{print $1}')
+        PG_CONF_FILE="/etc/postgresql/$PG_VERSION/main/postgresql.conf"
+        
+        if [ -f "$PG_CONF_FILE" ]; then
+            echo "[INFO] Applicazione tuning automatico su PostgreSQL ($PG_CONF_FILE)..."
+            sed -i "s/#shared_buffers = 128MB/shared_buffers = ${PG_SHARED_BUFFERS}MB/" "$PG_CONF_FILE"
+            sed -i "s/#effective_cache_size = 4GB/effective_cache_size = ${PG_EFFECTIVE_CACHE}MB/" "$PG_CONF_FILE"
+            systemctl restart postgresql
+        fi
+
+        su - postgres -c "psql -t -c \"SELECT 1 FROM pg_roles WHERE rolname='$ODOO_USER'\" | grep -q 1 || createuser -s $ODOO_USER"
+
+        id -u $ODOO_USER &>/dev/null || useradd -m -d $ODOO_HOME -U -r -s /bin/bash $ODOO_USER
+
+        mkdir -p $ODOO_HOME $CUSTOM_ADDONS_DIR $LOG_DIR $OCA_DIR
+        chown -R $ODOO_USER:$ODOO_USER $ODOO_HOME $LOG_DIR $OCA_DIR
+
+        if [ ! -d "$ODOO_CORE_DIR/.git" ]; then
+            echo "[INFO] Clonazione repository ufficiale Odoo 18..."
+            git clone --branch 18.0 --depth 1 https://github.com/odoo/odoo.git "$ODOO_CORE_DIR"
+            chown -R $ODOO_USER:$ODOO_USER "$ODOO_CORE_DIR"
+        fi
+
+        echo "[INFO] Configurazione ambiente virtuale Python..."
+        su - $ODOO_USER -c "python3 -m venv $ODOO_HOME/venv"
+        su - $ODOO_USER -c "$ODOO_HOME/venv/bin/pip install --upgrade pip wheel"
+        su - $ODOO_USER -c "$ODOO_HOME/venv/bin/pip install -r $ODOO_CORE_DIR/requirements.txt"
+
+        echo "[INFO] Scrittura file di configurazione $CONFIG_FILE..."
+        cat << EOF > "$CONFIG_FILE"
+[options]
+admin_passwd = admin
+db_host = False
+db_port = False
+db_user = $ODOO_USER
+db_password = False
+xmlrpc_port = 8069
+logfile = $LOG_DIR/odoo18.log
+addons_path = $ODOO_CORE_DIR/addons,$CUSTOM_ADDONS_DIR
+workers = $ODOO_WORKERS
+limit_memory_soft = $LIMIT_MEMORY_SOFT
+limit_memory_hard = $LIMIT_MEMORY_HARD
+limit_time_cpu = 600
+limit_time_real = 1200
+EOF
+        chown $ODOO_USER:$ODOO_USER "$CONFIG_FILE"
+        chmod 640 "$CONFIG_FILE"
+
+        echo "[INFO] Configurazione servizio systemd ($SERVICE_FILE)..."
+        cat << EOF > "$SERVICE_FILE"
+[Unit]
+Description=Odoo 18 Open Source ERP
+Documentation=https://www.odoo.com
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=$ODOO_USER
+Group=$ODOO_USER
+ExecStart=$ODOO_HOME/venv/bin/python3 $ODOO_CORE_DIR/odoo-bin -c $CONFIG_FILE
+KillMode=mixed
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        systemctl daemon-reload
+        systemctl enable odoo18.service
+
+        echo "[INFO] Clonazione di tutti i repository OCA in $OCA_DIR..."
+        REPOS=$(get_repos)
+        for REPO in $REPOS; do
+            REPO_PATH="$OCA_DIR/$REPO"
+            REPO_URL="https://github.com/$ORG_NAME/$REPO.git"
+            if [ ! -d "$REPO_PATH/.git" ]; then
+                git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_PATH" || true
+            fi
+        done
+        chown -R $ODOO_USER:$ODOO_USER "$OCA_DIR"
+
+        echo "=== INSTALLAZIONE BASE COMPLETATA ==="
+        echo "Ora puoi eseguire 'sudo ./setup_odoo18.sh select' per scegliere quali moduli attivare."
+        ;;
+
+    traccar-install)
+        echo "=== AVVIO INSTALLAZIONE TRACCAR CON POSTGRESQL ==="
+        
+        apt-get update
+        apt-get install -y default-jre unzip wget curl
+
+        echo ""
+        echo "--- Configurazione Reverse Geocoding (Nominatim) ---"
+        read -p "Inserisci l'URL del server Nominatim (es. https://nominatim.openstreetmap.org/ o premi INVIO per saltare): " NOMINATIM_URL
+        
+        echo ""
+        echo "--- Configurazione Forwarding Dati Traccar ---"
+        read -p "Inserisci l'indirizzo del server Traccar di destinazione per il forwarding (es. http://tuo-server-remoto:8082 o premi INVIO per saltare): " FORWARD_URL
+
+        echo "[INFO] Configurazione database PostgreSQL per Traccar..."
+        su - postgres -c "psql -t -c \"SELECT 1 FROM pg_roles WHERE rolname='traccar'\" | grep -q 1 || psql -c \"CREATE USER traccar WITH PASSWORD 'traccar_secure_password';\""
+        su - postgres -c "psql -t -c \"SELECT 1 FROM pg_database WHERE datname='traccar'\" | grep -q 1 || psql -c \"CREATE DATABASE traccar OWNER traccar;\""
+
+        TRAC_DIR="/opt/traccar"
+        mkdir -p "$TRAC_DIR"
+        cd "$TRAC_DIR"
+        
+        echo "[INFO] Download dell'ultima versione di Traccar..."
+        TRACCAR_URL=$(curl -s https://api.github.com/repos/traccar/traccar/releases/latest | grep browser_download_url | grep linux64 | cut -d '"' -f 4)
+        if [ -z "$TRACCAR_URL" ]; then
+            TRACCAR_URL="https://github.com/traccar/traccar/releases/download/v6.5/traccar-linux-64-6.5.zip"
+        fi
+        
+        wget -O traccar.zip "$TRACCAR_URL"
+        unzip -o traccar.zip
+        rm traccar.zip
+
+        echo "[INFO] Configurazione di traccar.xml con backend PostgreSQL..."
+        cat << EOF > "$TRAC_DIR/traccar.xml"
+<?xml version='1.0' encoding='UTF-8'?>
+<properties>
+    <entry key='config.default'>./conf/default.xml</entry>
+
+    <entry key='database.driver'>org.postgresql.Driver</entry>
+    <entry key='database.url'>jdbc:postgresql://localhost:5432/traccar</entry>
+    <entry key='database.user'>traccar</entry>
+    <entry key='database.password'>traccar_secure_password</entry>
+
+    <entry key='web.enable'>true</entry>
+    <entry key='web.port'>8082</entry>
+EOF
+
+        if [ -n "$NOMINATIM_URL" ]; then
+            echo "[INFO] Configurazione Reverse Geocoding con Nominatim abilitata: $NOMINATIM_URL"
+            cat << EOF >> "$TRAC_DIR/traccar.xml"
+    <entry key='geocoder.enable'>true</entry>
+    <entry key='geocoder.type'>nominatim</entry>
+    <entry key='geocoder.url'>${NOMINATIM_URL}</entry>
+EOF
+        fi
+
+        if [ -n "$FORWARD_URL" ]; then
+            echo "[INFO] Configurazione Forwarding Traccar abilitata verso: $FORWARD_URL"
+            cat << EOF >> "$TRAC_DIR/traccar.xml"
+    <entry key='forward.enable'>true</entry>
+    <entry key='forward.url'>${FORWARD_URL}</entry>
+EOF
+        fi
+
+        echo "</properties>" >> "$TRAC_DIR/traccar.xml"
+
+        echo "[INFO] Creazione del servizio systemd per Traccar..."
+        cat << EOF > /etc/systemd/system/traccar.service
+[Unit]
+Description=Traccar GPS Tracking Server
+After=network.target postgresql.service
+
+[Service]
+WorkingDirectory=$TRAC_DIR
+ExecStart=/usr/bin/java -Xms512m -Xmx2g -jar tracker-server.jar conf/traccar.xml
+SyslogIdentifier=traccar
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        systemctl daemon-reload
+        systemctl enable traccar.service
+        systemctl start traccar.service
+
+        echo "=== INSTALLAZIONE TRACCAR COMPLETATA ==="
+        echo "Traccar è attivo sulla porta 8082, collegato a PostgreSQL e configurato con le opzioni scelte."
+        ;;
+
+    install)
+        echo "=== Clonazione / Sincronizzazione repository OCA ==="
+        mkdir -p "$OCA_DIR"
+        REPOS=$(get_repos)
+        if [ -z "$REPOS" ]; then
+            echo "[ERRORE] Impossibile recuperare i repository da GitHub."
+            exit 1
+        fi
+
+        for REPO in $REPOS; do
+            REPO_PATH="$OCA_DIR/$REPO"
+            REPO_URL="https://github.com/$ORG_NAME/$REPO.git"
+            if [ ! -d "$REPO_PATH/.git" ]; then
+                git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$REPO_PATH" || true
+            fi
+        done
+        chown -R $ODOO_USER:$ODOO_USER "$OCA_DIR"
+        echo "=== Sincronizzazione completata ==="
+        ;;
+
+    select)
+        select_repos
+        ;;
+
+    update)
+        echo "=== Aggiornamento (git pull) di tutti i repository OCA ==="
+        if [ ! -d "$OCA_DIR" ]; then
+            echo "[ERRORE] La cartella $OCA_DIR non esiste. Esegui prima 'full-install' o 'install'."
+            exit 1
+        fi
+
+        for REPO_PATH in "$OCA_DIR"/*/; do
+            if [ -d "${REPO_PATH}.git" ]; then
+                REPO_NAME=$(basename "$REPO_PATH")
+                echo "[UPDATE] Aggiornamento di $REPO_NAME..."
+                cd "$REPO_PATH"
+                git checkout "$BRANCH" || true
+                git pull origin "$BRANCH" || true
+                cd - > /dev/null
+            fi
+        done
+        echo "=== Aggiornamento Git completato ==="
+        ;;
+
+    clean)
+        echo "=== Pulizia link simbolici orfani ==="
+        find "$CUSTOM_ADDONS_DIR" -type l | while read -r SYMLINK; do
+            if [ ! -e "$(readlink -f "$SYMLINK")" ]; then
+                rm "$SYMLINK"
+                echo "[RIMOZIONE ORFANO] $(basename "$SYMLINK")"
+            fi
+        done
+        echo "=== Pulizia completata ==="
+        ;;
+
+    status)
+        echo "=== Controllo stato Git dei repository OCA ==="
+        for REPO_PATH in "$OCA_DIR"/*/; do
+            if [ -d "${REPO_PATH}.git" ]; then
+                REPO_NAME=$(basename "$REPO_PATH")
+                echo "--- Repository: $REPO_NAME ---"
+                cd "$REPO_PATH"
+                git status -s
+                cd - > /dev/null
+            fi
+        done
+        ;;
+
+    help|*)
+        show_help
+        ;;
+esac
