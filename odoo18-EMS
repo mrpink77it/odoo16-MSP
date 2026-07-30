@@ -37,6 +37,22 @@ show_help() {
     echo "  help            Mostra questo messaggio di guida."
     echo "=================================================================="
 }
+sleep 30
+
+# Imposta la localizzazione del sistema a UTF-8
+sudo locale-gen it_IT.UTF-8
+sudo update-locale LANG=it_IT.UTF-8
+export LC_ALL="it_IT.UTF-8"
+export LANG="it_IT.UTF-8"
+
+# Imposta l'ora a Roma
+sudo timedatectl set-timezone Europe/Rome
+sudo dpkg-reconfigure tzdata
+
+# Ricalcola le timezone in base alla timezone locale
+sudo dpkg-reconfigure tzdata
+
+sudo apt update && sudo apt upgrade -y
 
 # Controllo privilegi di root
 if [ "$EUID" -ne 0 ]; then
