@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_fleet_integration_settings_form" model="ir.ui.view">
+        <field name="name">fleet.integration.settings.form</field>
+        <field name="model">fleet.integration.settings</field>
+        <field name="arch" type="xml">
+            <form string="Integrazioni Telemetria &amp; IoT">
+                <header>
+                    <button name="action_sync_traccar" string="Sincronizza Traccar" type="object" class="oe_highlight" icon="fa-refresh"/>
+                    <button name="action_sync_emnify" string="Sincronizza Emnify SIM" type="object" class="oe_highlight" icon="fa-signal"/>
+                    <button name="action_sync_teltonika" string="Sincronizza Teltonika FOTA" type="object" class="oe_highlight" icon="fa-microchip"/>
+                </header>
+                <sheet>
+                    <group string="Credenziali Traccar">
+                        <field name="traccar_url"/>
+                        <field name="traccar_token" password="True"/>
+                    </group>
+                    <group string="Credenziali Emnify">
+                        <field name="emnify_api_url"/>
+                        <field name="emnify_token" password="True"/>
+                    </group>
+                    <group string="Credenziali Teltonika FOTA / RMS">
+                        <field name="teltonika_api_url"/>
+                        <field name="teltonika_api_token" password="True"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_fleet_integration_settings" model="ir.actions.act_window">
+        <field name="name">Integrazioni Telemetria</field>
+        <field name="res_model">fleet.integration.settings</field>
+        <field name="view_mode">form</field>
+        <field name="target">inline</field>
+    </record>
+
+    <menuitem id="menu_fleet_integration_root"
+              name="Telemetria &amp; IoT"
+              parent="fleet.menu_root"
+              sequence="50"/>
+
+    <menuitem id="menu_fleet_integration_settings"
+              name="Configurazione API"
+              parent="menu_fleet_integration_root"
+              action="action_fleet_integration_settings"
+              sequence="10"/>
+</odoo>
