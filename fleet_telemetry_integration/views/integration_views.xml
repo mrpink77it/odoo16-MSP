@@ -1,20 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <!-- Vista Tree (Lista) dei Server Traccar -->
+    <record id="view_fleet_traccar_server_tree" model="ir.ui.view">
+        <field name="name">fleet.traccar.server.tree</field>
+        <field name="model">fleet.traccar.server</field>
+        <field name="arch" type="xml">
+            <list string="Server Traccar">
+                <field name="name"/>
+                <field name="traccar_url"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Vista Form del singolo Server Traccar -->
+    <record id="view_fleet_traccar_server_form" model="ir.ui.view">
+        <field name="name">fleet.traccar.server.form</field>
+        <field name="model">fleet.traccar.server</field>
+        <field name="arch" type="xml">
+            <form string="Server Traccar">
+                <header>
+                    <button name="action_test_connection" string="Test Connessione" type="object" class="oe_highlight" icon="fa-plug"/>
+                </header>
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="traccar_url"/>
+                        <field name="traccar_token" password="True"/>
+                        <field name="active"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Vista Configurazione Generale (Emnify & Teltonika) -->
     <record id="view_fleet_integration_settings_form" model="ir.ui.view">
         <field name="name">fleet.integration.settings.form</field>
         <field name="model">fleet.integration.settings</field>
         <field name="arch" type="xml">
-            <form string="Integrazioni Telemetria &amp; IoT">
+            <form string="Altre Integrazioni IoT">
                 <header>
-                    <button name="action_sync_traccar" string="Sincronizza Traccar" type="object" class="oe_highlight" icon="fa-refresh"/>
                     <button name="action_sync_emnify" string="Sincronizza Emnify SIM" type="object" class="oe_highlight" icon="fa-signal"/>
                     <button name="action_sync_teltonika" string="Sincronizza Teltonika FOTA" type="object" class="oe_highlight" icon="fa-microchip"/>
                 </header>
                 <sheet>
-                    <group string="Credenziali Traccar">
-                        <field name="traccar_url"/>
-                        <field name="traccar_token" password="True"/>
-                    </group>
                     <group string="Credenziali Emnify">
                         <field name="emnify_api_url"/>
                         <field name="emnify_token" password="True"/>
@@ -28,21 +58,36 @@
         </field>
     </record>
 
+    <!-- Azione per aprire la lista dei server Traccar -->
+    <record id="action_fleet_traccar_server" model="ir.actions.act_window">
+        <field name="name">Server Traccar</field>
+        <field name="res_model">fleet.traccar.server</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <!-- Azione per le impostazioni generali -->
     <record id="action_fleet_integration_settings" model="ir.actions.act_window">
-        <field name="name">Integrazioni Telemetria</field>
+        <field name="name">Impostazioni IoT</field>
         <field name="res_model">fleet.integration.settings</field>
         <field name="view_mode">form</field>
         <field name="target">inline</field>
     </record>
 
+    <!-- Menu principale e sottomenu -->
     <menuitem id="menu_fleet_integration_root"
               name="Telemetria &amp; IoT"
               parent="fleet.menu_root"
               sequence="50"/>
 
+    <menuitem id="menu_fleet_traccar_servers"
+              name="Server Traccar"
+              parent="menu_fleet_integration_root"
+              action="action_fleet_traccar_server"
+              sequence="10"/>
+
     <menuitem id="menu_fleet_integration_settings"
-              name="Configurazione API"
+              name="Altre Configurazioni"
               parent="menu_fleet_integration_root"
               action="action_fleet_integration_settings"
-              sequence="10"/>
+              sequence="20"/>
 </odoo>

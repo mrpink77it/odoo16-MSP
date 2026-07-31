@@ -1,2 +1,3 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_fleet_integration_settings,fleet.integration.settings,model_fleet_integration_settings,base.group_system,1,1,1,1
+access_fleet_traccar_server,fleet.traccar.server,model_fleet_traccar_server,base.group_system,1,1,1,1

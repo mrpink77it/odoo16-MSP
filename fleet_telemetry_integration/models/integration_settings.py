@@ -2,20 +2,16 @@ import requests
 from odoo import models, fields, api
 from odoo.exceptions import UserError
 
-class FleetIntegrationSettings(models.TransientModel):
-    _name = 'fleet.integration.settings'
-    _inherit = 'res.config.settings'
+class FleetTraccarServer(models.Model):
+    _name = 'fleet.traccar.server'
+    _description = 'Server Traccar Remoto'
 
-    traccar_url = fields.Char(string="Traccar API URL", default="http://localhost:8082/api")
-    traccar_token = fields.Char(string="Traccar User Token")
-    
-    emnify_api_url = fields.Char(string="Emnify API URL", default="https://api.emnify.com/v1")
-    emnify_token = fields.Char(string="Emnify Auth Token")
+    name = fields.Char(string="Nome Server / Identificativo", required=True)
+    traccar_url = fields.Char(string="Traccar API URL", required=True, default="http://localhost:8082/api")
+    traccar_token = fields.Char(string="Traccar User Token", required=True)
+    active = fields.Boolean(default=True)
 
-    teltonika_api_url = fields.Char(string="Teltonika API URL")
-    teltonika_api_token = fields.Char(string="Teltonika API Token")
-
-    def action_sync_traccar(self):
+    def action_test_connection(self):
         self.ensure_one()
         try:
             headers = {"Authorization": f"Bearer {self.traccar_token}", "Accept": "application/json"}
@@ -27,16 +23,28 @@ class FleetIntegrationSettings(models.TransientModel):
                     'type': 'ir.actions.client',
                     'tag': 'display_notification',
                     'params': {
-                        'title': 'Successo',
-                        'message': f'Sincronizzazione Traccar completata! Letti {len(devices)} dispositivi.',
+                        'title': 'Connessione Riuscita',
+                        'message': f"Server '{self.name}': Connessione OK. Letti {len(devices)} dispositivi.",
                         'type': 'success',
                         'sticky': False,
                     }
                 }
             else:
-                raise UserError(f"Errore API Traccar (Codice {response.status_code}): {response.text}")
+                raise UserError(f"Errore API (Codice {response.status_code}): {response.text}")
         except Exception as e:
-            raise UserError(f"Impossibile connettersi a Traccar: {str(e)}")
+            raise UserError(f"Impossibile connettersi al server {self.name}: {str(e)}")
+
+
+class FleetIntegrationSettings(models.TransientModel):
+    _name = 'fleet.integration.settings'
+    _inherit = 'res.config.settings'
+
+    # Manteniamo le configurazioni globali per Emnify e Teltonika se restano uniche
+    emnify_api_url = fields.Char(string="Emnify API URL", default="https://api.emnify.com/v1")
+    emnify_token = fields.Char(string="Emnify Auth Token")
+
+    teltonika_api_url = fields.Char(string="Teltonika API URL")
+    teltonika_api_token = fields.Char(string="Teltonika API Token")
 
     def action_sync_emnify(self):
         self.ensure_one()
@@ -45,7 +53,7 @@ class FleetIntegrationSettings(models.TransientModel):
             'tag': 'display_notification',
             'params': {
                 'title': 'Emnify',
-                'message': 'Sincronizzazione SIM Emnify avviata con successo.',
+                'message': 'Sincronizzazione SIM Emnify avviata.',
                 'type': 'success',
                 'sticky': False,
             }
