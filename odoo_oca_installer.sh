@@ -50,8 +50,9 @@ fi
 echo -e "\n${BLUE}>>> Aggiornamento sistema e verifica pacchetti base...${NC}"
 apt-get update -qq
 
+# Aggiunto "locales" ai pacchetti base
 PACKAGES=(
-    "git" "curl" "jq" "wget" "mc" "btop" "nano"
+    "locales" "git" "curl" "jq" "wget" "mc" "btop" "nano"
     "python3-full" "python3-dev" "python3-venv" "build-essential"
     "libpq-dev" "libxml2-dev" "libxslt1-dev" "libldap2-dev" "libsasl2-dev" "libssl-dev" "libffi-dev"
     "postgresql" "postgresql-client"
@@ -78,7 +79,18 @@ else
     echo -e "${GREEN}Tutte le dipendenze di sistema sono già installate.${NC}"
 fi
 
-echo -e "${BLUE}>>> Installazione rtlcss (per layout Right-to-Left)...${NC}"
+# ==============================================================================
+# 1.1 CONFIGURAZIONE DEL LOCALE (en_US.UTF-8)
+# ==============================================================================
+echo -e "\n${BLUE}>>> Configurazione del Locale di sistema (en_US.UTF-8)...${NC}"
+locale-gen en_US.UTF-8
+update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+# Esporta temporaneamente per la sessione corrente dello script
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+echo -e "${GREEN}Locale impostato correttamente.${NC}"
+
+echo -e "\n${BLUE}>>> Installazione rtlcss (per layout Right-to-Left)...${NC}"
 if ! command -v rtlcss > /dev/null; then
     npm install -g rtlcss >/dev/null 2>&1
 fi
@@ -222,6 +234,8 @@ SyslogIdentifier=odoo
 PermissionsStartOnly=true
 User=$OE_USER
 Group=$OE_USER
+Environment="LANG=en_US.UTF-8"
+Environment="LC_ALL=en_US.UTF-8"
 ExecStart=$PYTHON_CMD $OE_HOME_EXT/odoo-bin -c $OE_CONFIG
 StandardOutput=journal+console
 
