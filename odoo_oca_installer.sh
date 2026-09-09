@@ -1,7 +1,11 @@
 #!/bin/bash
 # ==============================================================================
 # INSTALLER ODOO + OCA SYNC (Bare-Metal Ubuntu/Debian)
+# Ottimizzato per Ubuntu 24.04 / Debian 13
 # ==============================================================================
+
+# Disabilita completamente i prompt interattivi di apt (es. needrestart, tzdata)
+export DEBIAN_FRONTEND=noninteractive
 
 # ==============================================================================
 # VARIABILI DI CONFIGURAZIONE GLOBALE
@@ -22,7 +26,9 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# Controllo Root
+# ==============================================================================
+# PRE-FLIGHT CHECKS
+# ==============================================================================
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}Errore: Questo script deve essere eseguito come root (sudo).${NC}"
   exit 1
@@ -39,9 +45,9 @@ if [ -z "$OE_VERSION" ]; then
 fi
 
 # ==============================================================================
-# 1. INSTALLAZIONE DIPENDENZE DI SISTEMA E DATABASE
+# 1. INSTALLAZIONE DIPENDENZE DI SISTEMA E DATABASE (OTTIMIZZATA)
 # ==============================================================================
-echo -e "\n${BLUE}>>> Aggiornamento sistema e installazione pacchetti base...${NC}"
+echo -e "\n${BLUE}>>> Aggiornamento sistema e verifica pacchetti base...${NC}"
 apt-get update -qq
 
 PACKAGES=(
@@ -53,23 +59,37 @@ PACKAGES=(
     "xfonts-75dpi" "xfonts-base" "fontconfig" "libxrender1" "libxext6"
 )
 
+# Raccoglie solo i pacchetti mancanti
+MISSING_PACKAGES=()
 for pkg in "${PACKAGES[@]}"; do
     if ! dpkg -l | grep -q -w "^ii  $pkg"; then
-        echo "Installazione: $pkg..."
-        apt-get install -y "$pkg" >/dev/null
+        MISSING_PACKAGES+=("$pkg")
     fi
 done
 
+# Installazione batch silente e veloce
+if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Installazione in blocco di ${#MISSING_PACKAGES[@]} pacchetti...${NC}"
+    apt-get install -y -q \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        --no-install-recommends "${MISSING_PACKAGES[@]}"
+else
+    echo -e "${GREEN}Tutte le dipendenze di sistema sono già installate.${NC}"
+fi
+
 echo -e "${BLUE}>>> Installazione rtlcss (per layout Right-to-Left)...${NC}"
-npm install -g rtlcss >/dev/null 2>&1
+if ! command -v rtlcss > /dev/null; then
+    npm install -g rtlcss >/dev/null 2>&1
+fi
 
 echo -e "${BLUE}>>> Installazione wkhtmltopdf...${NC}"
-if ! command -v wkhtmltopdf &> /dev/null; then
+if ! command -v wkhtmltopdf > /dev/null; then
     wget -q https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.jammy_amd64.deb
     apt-get install -y ./wkhtmltox_0.12.6.1-2.jammy_amd64.deb >/dev/null
     rm wkhtmltox_0.12.6.1-2.jammy_amd64.deb
-    ln -s /usr/local/bin/wkhtmltopdf /usr/bin/wkhtmltopdf 2>/dev/null
-    ln -s /usr/local/bin/wkhtmltoimage /usr/bin/wkhtmltoimage 2>/dev/null
+    ln -sf /usr/local/bin/wkhtmltopdf /usr/bin/wkhtmltopdf 2>/dev/null
+    ln -sf /usr/local/bin/wkhtmltoimage /usr/bin/wkhtmltoimage 2>/dev/null
 else
     echo -e "${GREEN}wkhtmltopdf già installato.${NC}"
 fi
@@ -82,7 +102,7 @@ if ! id -u $OE_USER > /dev/null 2>&1; then
     useradd -m -U -r -d $OE_HOME -s /bin/bash $OE_USER
 fi
 
-# Crea utente PostgreSQL
+# Crea utente PostgreSQL (ignora errore se esiste già)
 sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$OE_USER'" | grep -q 1 || sudo -u postgres createuser -s $OE_USER
 
 # ==============================================================================
@@ -91,6 +111,7 @@ sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$OE_USER'" | g
 echo -e "\n${BLUE}>>> Download di Odoo $OE_VERSION...${NC}"
 mkdir -p $CUSTOM_ADDONS_DIR
 mkdir -p $OCA_REPOS_DIR
+chown -R $OE_USER:$OE_USER $OE_HOME
 
 if [ ! -d "$OE_HOME_EXT" ]; then
     sudo -u $OE_USER git clone --depth 1 --branch $OE_VERSION https://github.com/odoo/odoo $OE_HOME_EXT
@@ -135,7 +156,7 @@ for REPO_URL in "${REPOS[@]}"; do
     REPO_NAME=$(basename "$REPO_URL" .git)
     TARGET_DIR="$OCA_REPOS_DIR/$REPO_NAME"
 
-    # Verifica esistenza branch in modo silente
+    # Verifica esistenza branch in modo silente prima di clonare
     BRANCH_EXISTS=$(git ls-remote --heads "$REPO_URL" "$OE_VERSION" | wc -l)
     if [ "$BRANCH_EXISTS" -eq 0 ]; then
         continue
@@ -151,7 +172,7 @@ for REPO_URL in "${REPOS[@]}"; do
         sudo -u $OE_USER git clone -b "$OE_VERSION" --single-branch "$REPO_URL" "$TARGET_DIR" >/dev/null 2>&1
     fi
 
-    # Creazione Symlink e installazione dipendenze OCA
+    # Creazione Symlink (hard-symlink nella cartella custom_addons)
     for manifest in "$TARGET_DIR"/*/__manifest__.py; do
         if [ -f "$manifest" ]; then
             MODULE_DIR=$(dirname "$manifest")
@@ -160,6 +181,7 @@ for REPO_URL in "${REPOS[@]}"; do
         fi
     done
 
+    # Installazione dipendenze Python per il repo specifico
     if [ -f "$TARGET_DIR/requirements.txt" ]; then
         sudo -u $OE_USER $PIP_CMD install -r "$TARGET_DIR/requirements.txt" >/dev/null 2>&1
     fi
@@ -212,9 +234,9 @@ systemctl enable odoo
 systemctl start odoo
 
 echo -e "\n${GREEN}======================================================================${NC}"
-echo -e "${GREEN}Installazione Completata!${NC}"
-echo -e "Odoo è in esecuzione e accessibile su: http://<tuo-ip>:8069"
-echo -e "Configurazione: $OE_CONFIG"
+echo -e "${GREEN}Installazione Completata con Successo!${NC}"
+echo -e "Odoo è in esecuzione e accessibile su: http://$(hostname -I | awk '{print $1}'):8069"
+echo -e "Configurazione principale: $OE_CONFIG"
 echo -e "Cartella Moduli Custom (Symlink OCA): $CUSTOM_ADDONS_DIR"
-echo -e "Log: /var/log/odoo/odoo.log"
+echo -e "Log di sistema: /var/log/odoo/odoo.log"
 echo -e "${GREEN}======================================================================${NC}"
